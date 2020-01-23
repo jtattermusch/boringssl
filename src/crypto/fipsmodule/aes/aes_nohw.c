@@ -15,7 +15,10 @@
 #include <openssl/aes.h>
 
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
+
+#include <openssl/bio.h>
 
 #include "../../internal.h"
 
@@ -1120,8 +1123,48 @@ static void aes_nohw_setup_key_256(AES_KEY *key, const uint8_t in[32]) {
 
 // External API.
 
+static BIO *aes_nohw_print_start(const char *name) {
+  BIO *bio = BIO_new(BIO_s_mem());
+  BIO_printf(bio, "DEBUG %s", name);
+  return bio;
+}
+
+static void aes_nohw_print_ptr(BIO *bio, const char *name, const void *ptr) {
+  BIO_printf(bio, " %s=%p", name, ptr);
+}
+
+static void aes_nohw_print_zu(BIO *bio, const char *name, size_t v) {
+  BIO_printf(bio, " %s=%zu", name, v);
+}
+
+static void aes_nohw_print(BIO *bio, const char *name, const uint8_t *in, size_t len) {
+  BIO_printf(bio, " %s=", name);
+  for (size_t i = 0; i < len; i++) {
+    BIO_printf(bio, "%02x", in[i]);
+  }
+}
+
+static struct CRYPTO_STATIC_MUTEX aes_nohw_lock = CRYPTO_STATIC_MUTEX_INIT;
+
+static void aes_nohw_print_finish(BIO *bio) {
+  BIO_printf(bio, "\n");
+  const uint8_t *ptr;
+  size_t len;
+  BIO_mem_contents(bio, &ptr, &len);
+  CRYPTO_STATIC_MUTEX_lock_write(&aes_nohw_lock);
+  fwrite(ptr, len, 1, stderr);
+  CRYPTO_STATIC_MUTEX_unlock_write(&aes_nohw_lock);
+  BIO_free(bio);
+}
+
 int aes_nohw_set_encrypt_key(const uint8_t *key, unsigned bits,
                              AES_KEY *aeskey) {
+  BIO *bio = aes_nohw_print_start("aes_nohw_set_encrypt_key");
+  aes_nohw_print_ptr(bio, "key", aeskey);
+  aes_nohw_print_ptr(bio, "in_ptr", key);
+  aes_nohw_print(bio, "in", key, bits / 8);
+  aes_nohw_print_finish(bio);
+
   switch (bits) {
     case 128:
       aes_nohw_setup_key_128(aeskey, key);
@@ -1142,21 +1185,39 @@ int aes_nohw_set_decrypt_key(const uint8_t *key, unsigned bits,
 }
 
 void aes_nohw_encrypt(const uint8_t *in, uint8_t *out, const AES_KEY *key) {
+  BIO *bio = aes_nohw_print_start("aes_nohw_encrypt");
+  aes_nohw_print_ptr(bio, "key", key);
+  aes_nohw_print_ptr(bio, "in_ptr", in);
+  aes_nohw_print_ptr(bio, "out_ptr", out);
+  aes_nohw_print(bio, "in", in, 16);
+
   AES_NOHW_SCHEDULE sched;
   aes_nohw_expand_round_keys(&sched, key);
   AES_NOHW_BATCH batch;
   aes_nohw_to_batch(&batch, in, /*num_blocks=*/1);
   aes_nohw_encrypt_batch(&sched, key->rounds, &batch);
   aes_nohw_from_batch(out, /*num_blocks=*/1, &batch);
+
+  aes_nohw_print(bio, "out", out, 16);
+  aes_nohw_print_finish(bio);
 }
 
 void aes_nohw_decrypt(const uint8_t *in, uint8_t *out, const AES_KEY *key) {
+  BIO *bio = aes_nohw_print_start("aes_nohw_decrypt");
+  aes_nohw_print_ptr(bio, "key", key);
+  aes_nohw_print_ptr(bio, "in_ptr", in);
+  aes_nohw_print_ptr(bio, "out_ptr", out);
+  aes_nohw_print(bio, "in", in, 16);
+
   AES_NOHW_SCHEDULE sched;
   aes_nohw_expand_round_keys(&sched, key);
   AES_NOHW_BATCH batch;
   aes_nohw_to_batch(&batch, in, /*num_blocks=*/1);
   aes_nohw_decrypt_batch(&sched, key->rounds, &batch);
   aes_nohw_from_batch(out, /*num_blocks=*/1, &batch);
+
+  aes_nohw_print(bio, "out", out, 16);
+  aes_nohw_print_finish(bio);
 }
 
 static inline void aes_nohw_xor_block(uint8_t out[16], const uint8_t a[16],
@@ -1173,7 +1234,21 @@ static inline void aes_nohw_xor_block(uint8_t out[16], const uint8_t a[16],
 void aes_nohw_ctr32_encrypt_blocks(const uint8_t *in, uint8_t *out,
                                    size_t blocks, const AES_KEY *key,
                                    const uint8_t ivec[16]) {
+  BIO *bio = aes_nohw_print_start("aes_nohw_ctr32_encrypt_blocks");
+  aes_nohw_print_ptr(bio, "key", key);
+  aes_nohw_print_ptr(bio, "in_ptr", in);
+  aes_nohw_print_ptr(bio, "out_ptr", out);
+  aes_nohw_print_zu(bio, "blocks", blocks);
+  aes_nohw_print_ptr(bio, "ivec_ptr", ivec);
+
+  size_t len = blocks * 16;
+  aes_nohw_print(bio, "in", in, len);
+  aes_nohw_print(bio, "ivec", ivec, 16);
+  uint8_t *out_orig = out;
+
   if (blocks == 0) {
+    aes_nohw_print(bio, "out", out_orig, len);
+    aes_nohw_print_finish(bio);
     return;
   }
 
@@ -1215,13 +1290,29 @@ void aes_nohw_ctr32_encrypt_blocks(const uint8_t *in, uint8_t *out,
     out += 16 * AES_NOHW_BATCH_SIZE;
     ctr += AES_NOHW_BATCH_SIZE;
   }
+  aes_nohw_print(bio, "out", out_orig, len);
+  aes_nohw_print_finish(bio);
 }
 
 void aes_nohw_cbc_encrypt(const uint8_t *in, uint8_t *out, size_t len,
                           const AES_KEY *key, uint8_t *ivec, const int enc) {
+  BIO *bio = aes_nohw_print_start("aes_nohw_cbc_encrypt");
+  aes_nohw_print_ptr(bio, "key", key);
+  aes_nohw_print_ptr(bio, "in_ptr", in);
+  aes_nohw_print_ptr(bio, "out_ptr", out);
+  aes_nohw_print_zu(bio, "len", len);
+  aes_nohw_print_ptr(bio, "ivec_ptr", ivec);
+  aes_nohw_print_zu(bio, "enc", enc);
+  aes_nohw_print(bio, "in", in, len);
+  aes_nohw_print(bio, "ivec", ivec, 16);
+  uint8_t *out_orig = out;
+
   assert(len % 16 == 0);
   size_t blocks = len / 16;
   if (blocks == 0) {
+    aes_nohw_print(bio, "out", out_orig, len);
+    aes_nohw_print(bio, "ivec_new", ivec, 16);
+    aes_nohw_print_finish(bio);
     return;
   }
 
@@ -1247,6 +1338,9 @@ void aes_nohw_cbc_encrypt(const uint8_t *in, uint8_t *out, size_t len,
       blocks--;
     }
     memcpy(ivec, iv, 16);
+    aes_nohw_print(bio, "out", out_orig, len);
+    aes_nohw_print(bio, "ivec_new", ivec, 16);
+    aes_nohw_print_finish(bio);
     return;
   }
 
@@ -1279,4 +1373,7 @@ void aes_nohw_cbc_encrypt(const uint8_t *in, uint8_t *out, size_t len,
   }
 
   memcpy(ivec, iv, 16);
+  aes_nohw_print(bio, "out", out_orig, len);
+  aes_nohw_print(bio, "ivec_new", ivec, 16);
+  aes_nohw_print_finish(bio);
 }
