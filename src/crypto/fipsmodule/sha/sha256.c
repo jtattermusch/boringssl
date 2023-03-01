@@ -173,6 +173,9 @@ int SHA224_Final(uint8_t out[SHA224_DIGEST_LENGTH], SHA256_CTX *ctx) {
 }
 
 #ifndef SHA256_ASM
+
+ERROR! assembly optimizations are not enabled!!!!
+
 static const uint32_t K256[64] = {
     0x428a2f98UL, 0x71374491UL, 0xb5c0fbcfUL, 0xe9b5dba5UL, 0x3956c25bUL,
     0x59f111f1UL, 0x923f82a4UL, 0xab1c5ed5UL, 0xd807aa98UL, 0x12835b01UL,
